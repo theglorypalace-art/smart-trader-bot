@@ -1,8 +1,9 @@
 const TelegramBot = require('node-telegram-bot-api');
-const { TELEGRAM_BOT_TOKEN, ADMIN_CHAT_IDS } = require('../config');
+const { TELEGRAM_BOT_TOKEN, ADMIN_CHAT_IDS, AUTO_TRADE_ENABLED, MAX_CAPITAL_PCT_ALLOWED, HYPERLIQUID_IS_TESTNET } = require('../config');
 const db = require('../db/supabase');
 const state = require('../state');
 const { fetchLivePositionsByCoin } = require('../hyperliquid/positions');
+const { encryptSecret } = require('../crypto');
 const { fmtUsd, fmtPrice, fmtPct, formatDuration, formatOpenAlert, escapeMarkdownV2 } = require('./formatAlert');
 
 function createBot() {
@@ -327,20 +328,172 @@ function createBot() {
     );
   }
 
+  // ========== AUTO-TRADING (real execution) ==========
+
+  function isValidAddress(addr) {
+    return /^0x[a-fA-F0-9]{40}$/.test(addr);
+  }
+
+  function isValidPrivateKey(key) {
+    return /^0x[a-fA-F0-9]{64}$/.test(key);
+  }
+
+  async function handleConnect(chatId, messageId, args) {
+    const [agentKey, mainAddress] = args;
+
+    if (!agentKey || !mainAddress) {
+      await bot.sendMessage(
+        chatId,
+        'Usage: `/connect <agent_private_key> <main_account_address>`\n\n' +
+          'Generate an agent wallet from your Hyperliquid account settings ' +
+          '(API Wallet) — never paste your main wallet\u2019s private key or seed phrase here.',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    // Delete the message immediately so the plaintext key doesn't sit in
+    // chat history — best-effort, this can fail if the bot lacks delete
+    // rights, which is fine, we still proceed with onboarding.
+    bot.deleteMessage(chatId, messageId).catch(() => {});
+
+    if (!isValidPrivateKey(agentKey)) {
+      await bot.sendMessage(chatId, '❌ That doesn\u2019t look like a valid private key (expected 0x + 64 hex characters). Nothing was saved.');
+      return;
+    }
+    if (!isValidAddress(mainAddress)) {
+      await bot.sendMessage(chatId, '❌ That doesn\u2019t look like a valid address (expected 0x + 40 hex characters). Nothing was saved.');
+      return;
+    }
+
+    let encrypted;
+    try {
+      encrypted = encryptSecret(agentKey);
+    } catch (err) {
+      await bot.sendMessage(chatId, `❌ Could not securely store your key: ${err.message}`);
+      return;
+    }
+
+    await db.upsertTradingAccount(chatId, {
+      main_address: mainAddress,
+      agent_key_ciphertext: encrypted.ciphertext,
+      agent_key_iv: encrypted.iv,
+      agent_key_tag: encrypted.tag,
+    });
+
+    const netLabel = HYPERLIQUID_IS_TESTNET ? 'TESTNET' : 'MAINNET (real funds)';
+    await bot.sendMessage(
+      chatId,
+      `✅ Trading account connected \\(${escapeMarkdownV2(netLabel)}\\)\\.\n\n` +
+        `Your agent key is encrypted at rest and can only place/close trades — it cannot withdraw funds\\.\n\n` +
+        `Next steps:\n` +
+        `• \`/capital 5\` — % of your account to risk per auto\\-copied trade\n` +
+        `• \`/maxpos 200\` — hard cap in USD per trade\n` +
+        `• Tap 🤖 Auto\\-Copy on a trader you follow\n` +
+        `• \`/autotrade on\` — flip the master switch once you're ready`,
+      { parse_mode: 'MarkdownV2' }
+    );
+  }
+
+  async function handleSetCapital(chatId, args) {
+    const pct = Number(args[0]);
+    if (!pct || pct <= 0 || pct > MAX_CAPITAL_PCT_ALLOWED) {
+      await bot.sendMessage(
+        chatId,
+        `Usage: \`/capital 5\` — enter a number between 0 and ${MAX_CAPITAL_PCT_ALLOWED} (percent of your account per trade).`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+    const account = await db.getTradingAccount(chatId);
+    if (!account) {
+      await bot.sendMessage(chatId, 'Connect a trading account first with `/connect`.', { parse_mode: 'Markdown' });
+      return;
+    }
+    await db.upsertTradingAccount(chatId, { capital_pct: pct });
+    await bot.sendMessage(chatId, `✅ Capital per trade set to ${pct}% of your account.`);
+  }
+
+  async function handleSetMaxPos(chatId, args) {
+    const usd = Number(args[0]);
+    if (!usd || usd <= 0) {
+      await bot.sendMessage(chatId, 'Usage: `/maxpos 200` — max USD size per auto-copied trade.', { parse_mode: 'Markdown' });
+      return;
+    }
+    const account = await db.getTradingAccount(chatId);
+    if (!account) {
+      await bot.sendMessage(chatId, 'Connect a trading account first with `/connect`.', { parse_mode: 'Markdown' });
+      return;
+    }
+    await db.upsertTradingAccount(chatId, { max_position_usd: usd });
+    await bot.sendMessage(chatId, `✅ Max position size set to ${fmtUsd(usd)} per trade.`);
+  }
+
+  async function handleAutoTradeToggle(chatId, args) {
+    const arg = (args[0] || '').toLowerCase();
+    if (arg !== 'on' && arg !== 'off') {
+      await bot.sendMessage(chatId, 'Usage: `/autotrade on` or `/autotrade off`.', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    const account = await db.getTradingAccount(chatId);
+    if (!account) {
+      await bot.sendMessage(chatId, 'Connect a trading account first with `/connect`.', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    if (arg === 'on' && !AUTO_TRADE_ENABLED) {
+      await bot.sendMessage(
+        chatId,
+        '⚠️ Auto\\-trading is globally disabled on this bot right now \\(admin has not enabled `AUTO_TRADE_ENABLED`\\)\\. Your setting will be saved but no real orders will be placed until it is turned on\\.',
+        { parse_mode: 'MarkdownV2' }
+      );
+    }
+
+    await db.upsertTradingAccount(chatId, { auto_trade_enabled: arg === 'on' });
+    await bot.sendMessage(chatId, arg === 'on' ? '✅ Auto-trading turned ON for your account.' : '🛑 Auto-trading turned OFF for your account.');
+  }
+
+  async function sendMyTrades(chatId) {
+    const executions = await db.getRecentTradeExecutions(chatId, 10);
+    if (!executions.length) {
+      await bot.sendMessage(chatId, 'No auto-copy trades recorded yet.');
+      return;
+    }
+
+    let text = `🤖 *RECENT AUTO\\-COPY TRADES*\n\n`;
+    for (const e of executions) {
+      const icon = e.status === 'submitted' ? '✅' : '❌';
+      const coin = escapeMarkdownV2(e.coin);
+      const side = e.side === 'long' ? 'LONG' : 'SHORT';
+      const size = e.usd_size != null ? escapeMarkdownV2(fmtUsd(e.usd_size)) : 'n/a';
+      const when = escapeMarkdownV2(new Date(e.created_at).toISOString().slice(0, 16).replace('T', ' '));
+      text += `${icon} ${side} ${coin} — ${size} — ${when}\n`;
+      if (e.status === 'failed' && e.error_message) {
+        text += `   _${escapeMarkdownV2(e.error_message.slice(0, 80))}_\n`;
+      }
+    }
+
+    await bot.sendMessage(chatId, text, { parse_mode: 'MarkdownV2' });
+  }
+
   async function showMyFollowing(chatId) {
-    const [coins, traderAddresses] = await Promise.all([
+    const [coins, traders] = await Promise.all([
       db.getFollowedCoins(chatId),
       db.getFollowedTraders(chatId),
     ]);
 
+    const tradingAccount = await db.getTradingAccount(chatId);
+
     let text = `📋 *What you are following*\n\n`;
 
-    if (traderAddresses.length > 0) {
+    if (traders.length > 0) {
       text += `*Traders:*\n`;
-      for (const addr of traderAddresses) {
-        const t = await db.getTrader(addr);
-        const name = escapeMarkdownV2(t ? t.display_name : addr.slice(0, 10) + '…');
-        text += `• ${name}\n`;
+      for (const { address, autoCopy } of traders) {
+        const t = await db.getTrader(address);
+        const name = escapeMarkdownV2(t ? t.display_name : address.slice(0, 10) + '…');
+        const copyTag = autoCopy ? ' 🤖 _auto\\-copying_' : '';
+        text += `• ${name}${copyTag}\n`;
       }
       text += `\n`;
     }
@@ -349,14 +502,26 @@ function createBot() {
       text += `*Coins:* ${escapeMarkdownV2(coins.join(', '))}\n\n`;
     }
 
-    if (traderAddresses.length === 0 && coins.length === 0) {
+    if (traders.length === 0 && coins.length === 0) {
       text += `_You are not following anyone yet\\._\n\nTap *🏆 Top 10 Traders* to start\\.`;
     }
 
+    if (!tradingAccount) {
+      text += `\n_Want real auto\\-copy trading instead of just alerts? Use \`/connect\` to set it up\\._`;
+    }
+
     const buttons = [];
-    traderAddresses.forEach((addr) => {
-      const short = addr.slice(0, 6) + '…' + addr.slice(-4);
-      buttons.push([{ text: `❌ Unfollow ${short}`, callback_data: `unfollow_trader:${addr}` }]);
+    traders.forEach(({ address, autoCopy }) => {
+      const short = address.slice(0, 6) + '…' + address.slice(-4);
+      const row = [{ text: `❌ Unfollow ${short}`, callback_data: `unfollow_trader:${address}` }];
+      if (tradingAccount) {
+        row.push(
+          autoCopy
+            ? { text: '🛑 Stop Auto-Copy', callback_data: `autocopy_off:${address}` }
+            : { text: '🤖 Auto-Copy', callback_data: `autocopy_on:${address}` }
+        );
+      }
+      buttons.push(row);
     });
     coins.forEach((c) => {
       buttons.push([{ text: `❌ Unfollow ${c}`, callback_data: `unfollow_coin:${c}` }]);
@@ -462,6 +627,35 @@ function createBot() {
         return;
       }
 
+      if (lower.startsWith('/connect')) {
+        const args = text.split(/\s+/).slice(1);
+        await handleConnect(chatId, msg.message_id, args);
+        return;
+      }
+
+      if (lower.startsWith('/capital')) {
+        const args = text.split(/\s+/).slice(1);
+        await handleSetCapital(chatId, args);
+        return;
+      }
+
+      if (lower.startsWith('/maxpos')) {
+        const args = text.split(/\s+/).slice(1);
+        await handleSetMaxPos(chatId, args);
+        return;
+      }
+
+      if (lower.startsWith('/autotrade')) {
+        const args = text.split(/\s+/).slice(1);
+        await handleAutoTradeToggle(chatId, args);
+        return;
+      }
+
+      if (lower === '/mytrades') {
+        await sendMyTrades(chatId);
+        return;
+      }
+
       if (text === '🔥 Live Signals' || lower === '/signals') {
         await sendLiveSignals(chatId);
         return;
@@ -511,6 +705,27 @@ function createBot() {
         const address = data.split(':')[1];
         await db.unfollowTrader(chatId, address);
         await bot.answerCallbackQuery(query.id, { text: 'Unfollowed' });
+        await showMyFollowing(chatId);
+        return;
+      }
+
+      if (data.startsWith('autocopy_on:')) {
+        const address = data.split(':')[1];
+        const account = await db.getTradingAccount(chatId);
+        if (!account) {
+          await bot.answerCallbackQuery(query.id, { text: 'Connect a trading account first with /connect' });
+          return;
+        }
+        await db.setAutoCopy(chatId, address, true);
+        await bot.answerCallbackQuery(query.id, { text: 'Auto-copy enabled for this trader' });
+        await showMyFollowing(chatId);
+        return;
+      }
+
+      if (data.startsWith('autocopy_off:')) {
+        const address = data.split(':')[1];
+        await db.setAutoCopy(chatId, address, false);
+        await bot.answerCallbackQuery(query.id, { text: 'Auto-copy disabled' });
         await showMyFollowing(chatId);
         return;
       }
