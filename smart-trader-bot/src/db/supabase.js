@@ -101,10 +101,10 @@ async function unfollowTrader(chatId, traderAddress) {
 async function getFollowedTraders(chatId) {
   const { data, error } = await supabase
     .from('trader_subscriptions')
-    .select('trader_address')
+    .select('trader_address, auto_copy')
     .eq('chat_id', chatId);
   if (error) throw error;
-  return (data || []).map((r) => r.trader_address);
+  return (data || []).map((r) => ({ address: r.trader_address, autoCopy: r.auto_copy }));
 }
 
 async function getSubscribersForTrader(traderAddress) {
@@ -114,6 +114,63 @@ async function getSubscribersForTrader(traderAddress) {
     .eq('trader_address', traderAddress);
   if (error) throw error;
   return (data || []).map((r) => r.chat_id);
+}
+
+// ---- auto-trading ----
+async function setAutoCopy(chatId, traderAddress, enabled) {
+  const { error } = await supabase
+    .from('trader_subscriptions')
+    .update({ auto_copy: enabled })
+    .eq('chat_id', chatId)
+    .eq('trader_address', traderAddress);
+  if (error) throw error;
+}
+
+// Chat IDs that are both following AND auto-copying this trader.
+async function getAutoCopySubscribers(traderAddress) {
+  const { data, error } = await supabase
+    .from('trader_subscriptions')
+    .select('chat_id')
+    .eq('trader_address', traderAddress)
+    .eq('auto_copy', true);
+  if (error) throw error;
+  return (data || []).map((r) => r.chat_id);
+}
+
+async function upsertTradingAccount(chatId, fields) {
+  const { error } = await supabase
+    .from('trading_accounts')
+    .upsert(
+      { chat_id: chatId, updated_at: new Date().toISOString(), ...fields },
+      { onConflict: 'chat_id' }
+    );
+  if (error) throw error;
+}
+
+async function getTradingAccount(chatId) {
+  const { data, error } = await supabase
+    .from('trading_accounts')
+    .select('*')
+    .eq('chat_id', chatId)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function logTradeExecution(entry) {
+  const { error } = await supabase.from('trade_executions').insert(entry);
+  if (error) throw error;
+}
+
+async function getRecentTradeExecutions(chatId, limit = 10) {
+  const { data, error } = await supabase
+    .from('trade_executions')
+    .select('*')
+    .eq('chat_id', chatId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data || [];
 }
 
 // ---- open positions ----
@@ -213,6 +270,12 @@ module.exports = {
   unfollowTrader,
   getFollowedTraders,
   getSubscribersForTrader,
+  setAutoCopy,
+  getAutoCopySubscribers,
+  upsertTradingAccount,
+  getTradingAccount,
+  logTradeExecution,
+  getRecentTradeExecutions,
   getOpenPosition,
   getAllOpenPositions,
   upsertOpenPosition,
