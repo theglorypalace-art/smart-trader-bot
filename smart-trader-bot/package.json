@@ -9,9 +9,11 @@
     "refresh-traders": "node scripts/refreshTraders.js"
   },
   "dependencies": {
+    "@nktkas/hyperliquid": "^0.33.3",
     "@supabase/supabase-js": "^2.45.4",
     "dotenv": "^16.4.5",
     "node-telegram-bot-api": "^0.66.0",
+    "viem": "^2.21.0",
     "ws": "^8.18.0"
   }
 }
