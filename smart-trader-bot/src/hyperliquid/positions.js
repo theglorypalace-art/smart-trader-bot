@@ -44,4 +44,12 @@ async function fetchLivePositionsByCoin(address) {
   return map;
 }
 
-module.exports = { fetchClearinghouseState, fetchLivePositionsByCoin };
+// Returns the account's total margin-account value (in USD), used to size
+// auto-copy trades as a % of the follower's own capital.
+async function getAccountValue(address) {
+  const state = await fetchClearinghouseState(address);
+  const value = state && state.marginSummary && state.marginSummary.accountValue;
+  return value != null ? Number(value) : 0;
+}
+
+module.exports = { fetchClearinghouseState, fetchLivePositionsByCoin, getAccountValue };
