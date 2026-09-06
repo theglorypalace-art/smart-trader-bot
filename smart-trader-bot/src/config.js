@@ -37,4 +37,13 @@ module.exports = {
     .map((s) => s.trim())
     .filter(Boolean)
     .map(Number),
+
+  // ============================================================
+  // AUTO-TRADING — every default here is the SAFE default.
+  // Real mainnet trading requires explicitly setting two env vars.
+  // ============================================================
+  AUTO_TRADE_ENABLED: process.env.AUTO_TRADE_ENABLED === 'true', // global kill switch, OFF by default
+  HYPERLIQUID_IS_TESTNET: process.env.HYPERLIQUID_IS_TESTNET !== 'false', // testnet by default
+  MAX_CAPITAL_PCT_ALLOWED: Number(process.env.MAX_CAPITAL_PCT_ALLOWED || 20), // hard ceiling on /capital
+  DEFAULT_SLIPPAGE_PCT: Number(process.env.DEFAULT_SLIPPAGE_PCT || 1), // IOC limit price buffer
 };
