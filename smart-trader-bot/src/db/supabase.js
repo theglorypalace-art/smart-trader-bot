@@ -173,6 +173,36 @@ async function getRecentTradeExecutions(chatId, limit = 10) {
   return data || [];
 }
 
+// ---- demo mode ----
+async function upsertDemoPosition(pos) {
+  const { error } = await supabase
+    .from('demo_positions')
+    .upsert(pos, { onConflict: 'chat_id,trader_address,coin' });
+  if (error) throw error;
+}
+
+async function getDemoPosition(chatId, traderAddress, coin) {
+  const { data, error } = await supabase
+    .from('demo_positions')
+    .select('*')
+    .eq('chat_id', chatId)
+    .eq('trader_address', traderAddress)
+    .eq('coin', coin)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function clearDemoPosition(chatId, traderAddress, coin) {
+  const { error } = await supabase
+    .from('demo_positions')
+    .delete()
+    .eq('chat_id', chatId)
+    .eq('trader_address', traderAddress)
+    .eq('coin', coin);
+  if (error) throw error;
+}
+
 // ---- open positions ----
 async function getOpenPosition(traderAddress, coin) {
   const { data, error } = await supabase
@@ -276,6 +306,9 @@ module.exports = {
   getTradingAccount,
   logTradeExecution,
   getRecentTradeExecutions,
+  upsertDemoPosition,
+  getDemoPosition,
+  clearDemoPosition,
   getOpenPosition,
   getAllOpenPositions,
   upsertOpenPosition,
