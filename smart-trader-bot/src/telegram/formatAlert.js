@@ -18,6 +18,14 @@ function fmtUsd(n) {
   return (num < 0 ? '-' : '') + '$' + abs.toFixed(0);
 }
 
+// Whole-dollar fmtUsd loses meaningful precision on small demo balances
+// (e.g. a $100 account) where cents actually matter. Use this instead for
+// anything demo-related.
+function fmtUsdPrecise(n) {
+  const num = Number(n) || 0;
+  return (num < 0 ? '-' : '') + '$' + Math.abs(num).toFixed(2);
+}
+
 function fmtPrice(n) {
   return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
@@ -110,6 +118,7 @@ module.exports = {
   formatOpenAlert,
   formatCloseAlert,
   fmtUsd,
+  fmtUsdPrecise,
   fmtPrice,
   fmtPct,
   formatDuration,
