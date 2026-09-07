@@ -28,6 +28,19 @@ module.exports = {
   MIN_ACTIVE_ACCOUNT_VALUE_USD: Number(process.env.MIN_ACTIVE_ACCOUNT_VALUE_USD || 10000),
   MIN_TRADES_PER_DAY: Number(process.env.MIN_TRADES_PER_DAY || 3),
 
+  // Meme-coin pool — traders whose activity is concentrated in meme coins,
+  // separate from both pools above. Ranked by how meme-focused they are,
+  // not by overall profit.
+  MEME_COINS: (process.env.MEME_COINS || 'DOGE,SHIB,PEPE,WIF,BONK,FLOKI,MEME,POPCAT,MOG,BRETT,WOJAK,TURBO')
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean),
+  MAX_MEME_TRADERS: Number(process.env.MAX_MEME_TRADERS || 15),
+  MEME_LOOKBACK_DAYS: Number(process.env.MEME_LOOKBACK_DAYS || 7),
+  MIN_MEME_TRADE_PCT: Number(process.env.MIN_MEME_TRADE_PCT || 30), // % of a trader's fills that must be meme coins
+  MIN_MEME_ACCOUNT_VALUE_USD: Number(process.env.MIN_MEME_ACCOUNT_VALUE_USD || 5000),
+  MIN_MEME_TRADES: Number(process.env.MIN_MEME_TRADES || 5), // minimum sample size before judging meme %
+
   // Refresh leaderboard every 15 minutes
   TRADER_REFRESH_INTERVAL_MS: Number(process.env.TRADER_REFRESH_INTERVAL_MS || 15 * 60 * 1000),
 
@@ -46,4 +59,5 @@ module.exports = {
   HYPERLIQUID_IS_TESTNET: process.env.HYPERLIQUID_IS_TESTNET !== 'false', // testnet by default
   MAX_CAPITAL_PCT_ALLOWED: Number(process.env.MAX_CAPITAL_PCT_ALLOWED || 20), // hard ceiling on /capital
   DEFAULT_SLIPPAGE_PCT: Number(process.env.DEFAULT_SLIPPAGE_PCT || 1), // IOC limit price buffer
+  MEME_SLIPPAGE_PCT: Number(process.env.MEME_SLIPPAGE_PCT || 4), // wider buffer for thin/volatile meme books
 };
