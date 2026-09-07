@@ -4,7 +4,7 @@ const db = require('../db/supabase');
 const state = require('../state');
 const { fetchLivePositionsByCoin } = require('../hyperliquid/positions');
 const { encryptSecret } = require('../crypto');
-const { fmtUsd, fmtPrice, fmtPct, formatDuration, formatOpenAlert, escapeMarkdownV2 } = require('./formatAlert');
+const { fmtUsd, fmtUsdPrecise, fmtPrice, fmtPct, formatDuration, formatOpenAlert, escapeMarkdownV2 } = require('./formatAlert');
 
 function createBot() {
   const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
@@ -338,6 +338,47 @@ function createBot() {
     return /^0x[a-fA-F0-9]{64}$/.test(key);
   }
 
+  async function handleDemo(chatId) {
+    const existing = await db.getTradingAccount(chatId);
+
+    if (existing && existing.is_demo) {
+      await bot.sendMessage(
+        chatId,
+        `🧪 You already have a demo account\\.\n\nBalance: *${escapeMarkdownV2(fmtUsdPrecise(existing.demo_balance))}*\n\nFollow a trader and tap 🤖 Auto\\-Copy in *My Following* to practice\\.`,
+        { parse_mode: 'MarkdownV2' }
+      );
+      return;
+    }
+
+    if (existing && !existing.is_demo) {
+      await bot.sendMessage(
+        chatId,
+        '⚠️ You already have a real trading account connected. Demo mode is for accounts that haven\u2019t connected a real Hyperliquid key yet.'
+      );
+      return;
+    }
+
+    await db.upsertTradingAccount(chatId, {
+      is_demo: true,
+      demo_balance: 100,
+      capital_pct: 10,
+      max_position_usd: 20,
+      auto_trade_enabled: true, // safe by default — it's fake money
+    });
+
+    await bot.sendMessage(
+      chatId,
+      `🧪 *Demo account created\\!*\n\n` +
+        `Starting balance: *$100* \\(fake money, no real Hyperliquid account needed\\)\n` +
+        `Capital per trade: *10%*\n` +
+        `Max per trade: *$20*\n\n` +
+        `Now go to *🏆 Top 10 Traders* or *📋 My Following*, follow a trader, and tap 🤖 Auto\\-Copy\\. ` +
+        `You'll get simulated fills and PnL as if you'd copied them for real\\.\n\n` +
+        `Use \`/capital\` and \`/maxpos\` to adjust your demo settings, and \`/mytrades\` to see your history\\.`,
+      { parse_mode: 'MarkdownV2' }
+    );
+  }
+
   async function handleConnect(chatId, messageId, args) {
     const [agentKey, mainAddress] = args;
 
@@ -375,6 +416,7 @@ function createBot() {
     }
 
     await db.upsertTradingAccount(chatId, {
+      is_demo: false,
       main_address: mainAddress,
       agent_key_ciphertext: encrypted.ciphertext,
       agent_key_iv: encrypted.iv,
@@ -462,13 +504,17 @@ function createBot() {
     }
 
     let text = `🤖 *RECENT AUTO\\-COPY TRADES*\n\n`;
+    const icons = { submitted: '✅', demo_open: '🧪', demo_close: '🧪', failed: '❌' };
     for (const e of executions) {
-      const icon = e.status === 'submitted' ? '✅' : '❌';
+      const icon = icons[e.status] || '❔';
       const coin = escapeMarkdownV2(e.coin);
       const side = e.side === 'long' ? 'LONG' : 'SHORT';
-      const size = e.usd_size != null ? escapeMarkdownV2(fmtUsd(e.usd_size)) : 'n/a';
+      const size = e.usd_size != null
+        ? escapeMarkdownV2(e.status.startsWith('demo') ? fmtUsdPrecise(e.usd_size) : fmtUsd(e.usd_size))
+        : 'n/a';
       const when = escapeMarkdownV2(new Date(e.created_at).toISOString().slice(0, 16).replace('T', ' '));
-      text += `${icon} ${side} ${coin} — ${size} — ${when}\n`;
+      const label = e.status === 'demo_open' ? ' \\(demo open\\)' : e.status === 'demo_close' ? ' \\(demo close\\)' : '';
+      text += `${icon} ${side} ${coin}${label} — ${size} — ${when}\n`;
       if (e.status === 'failed' && e.error_message) {
         text += `   _${escapeMarkdownV2(e.error_message.slice(0, 80))}_\n`;
       }
@@ -624,6 +670,11 @@ function createBot() {
 
       if (lower === '/testalert') {
         await sendTestAlert(chatId);
+        return;
+      }
+
+      if (lower === '/demo') {
+        await handleDemo(chatId);
         return;
       }
 
