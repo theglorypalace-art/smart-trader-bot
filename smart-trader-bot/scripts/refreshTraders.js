@@ -1,4 +1,9 @@
-const { buildQualifiedTraderList, buildActiveTraderList, fetchLeaderboard } = require('../src/hyperliquid/leaderboard');
+const {
+  buildQualifiedTraderList,
+  buildActiveTraderList,
+  buildMemeTraderList,
+  fetchLeaderboard,
+} = require('../src/hyperliquid/leaderboard');
 const db = require('../src/db/supabase');
 
 async function refreshTraders() {
@@ -14,7 +19,13 @@ async function refreshTraders() {
   );
   console.log(`[refresh-traders] ${active.length} activity-pool traders qualified`);
 
-  const combined = [...qualified, ...active];
+  const meme = await buildMemeTraderList(
+    [...qualified, ...active].map((t) => t.address),
+    rows
+  );
+  console.log(`[refresh-traders] ${meme.length} meme-pool traders qualified`);
+
+  const combined = [...qualified, ...active, ...meme];
 
   await db.upsertTraders(combined);
   if (combined.length) {
