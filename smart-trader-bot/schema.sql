@@ -55,6 +55,7 @@ create table if not exists seen_fills (
 -- any index below references these columns.
 alter table traders add column if not exists pool text not null default 'quality';
 alter table traders add column if not exists trades_per_day numeric;
+alter table traders add column if not exists meme_pct numeric;
 
 create index if not exists idx_subscriptions_coin on subscriptions (coin);
 create index if not exists idx_trader_subscriptions_trader on trader_subscriptions (trader_address);
