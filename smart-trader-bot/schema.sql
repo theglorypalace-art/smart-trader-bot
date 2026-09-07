@@ -101,6 +101,28 @@ create table if not exists trading_accounts (
 -- Deliberately separate from trader_subscriptions (alert-only following).
 alter table trader_subscriptions add column if not exists auto_copy boolean not null default false;
 
+-- ---- DEMO MODE ----
+-- Lets anyone try auto-copy with a fake balance, no Hyperliquid account or
+-- agent key required at all. Never touches the real exchange API.
+alter table trading_accounts alter column main_address drop not null;
+alter table trading_accounts alter column agent_key_ciphertext drop not null;
+alter table trading_accounts alter column agent_key_iv drop not null;
+alter table trading_accounts alter column agent_key_tag drop not null;
+alter table trading_accounts add column if not exists is_demo boolean not null default false;
+alter table trading_accounts add column if not exists demo_balance numeric not null default 100;
+
+-- One simulated open position per (chat, trader, coin) while in demo mode.
+create table if not exists demo_positions (
+  chat_id         bigint not null,
+  trader_address  text not null,
+  coin            text not null,
+  side            text not null,
+  entry_price     numeric not null,
+  usd_size        numeric not null,
+  opened_at       timestamptz default now(),
+  primary key (chat_id, trader_address, coin)
+);
+
 -- Permanent audit trail of every auto-copy order attempt, success or fail.
 create table if not exists trade_executions (
   id              bigserial primary key,
@@ -110,7 +132,7 @@ create table if not exists trade_executions (
   side            text not null,
   usd_size        numeric,
   order_result    jsonb,
-  status          text not null,   -- 'submitted' | 'failed'
+  status          text not null,   -- 'submitted' | 'failed' | 'demo_open' | 'demo_close'
   error_message   text,
   created_at      timestamptz default now()
 );
