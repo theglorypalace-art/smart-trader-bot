@@ -9,6 +9,12 @@ const {
   ACTIVITY_LOOKBACK_DAYS,
   MIN_ACTIVE_ACCOUNT_VALUE_USD,
   MIN_TRADES_PER_DAY,
+  MEME_COINS,
+  MAX_MEME_TRADERS,
+  MEME_LOOKBACK_DAYS,
+  MIN_MEME_TRADE_PCT,
+  MIN_MEME_ACCOUNT_VALUE_USD,
+  MIN_MEME_TRADES,
 } = require('../config');
 
 async function fetchLeaderboard() {
@@ -57,6 +63,23 @@ async function computeActivityStats(address, lookbackDays) {
   const tradesPerDay = Number((recent.length / lookbackDays).toFixed(1));
   const winRate = winRateFromFills(fills);
   return { tradesPerDay, winRate };
+}
+
+// What % of a trader's recent fills are in known meme coins, plus a
+// sample-size count so a trader who's made 2 lucky meme trades out of 2
+// total doesn't get treated the same as one with real meme-trading history.
+async function computeMemeStats(address, lookbackDays) {
+  const fills = await fetchFills(address);
+  const cutoff = Date.now() - lookbackDays * 24 * 3600 * 1000;
+  const recent = fills.filter((f) => Number(f.time) >= cutoff);
+  if (!recent.length) return { memePct: 0, sampleSize: 0, winRate: null };
+
+  const memeSet = new Set(MEME_COINS);
+  const memeFills = recent.filter((f) => memeSet.has((f.coin || '').toUpperCase()));
+  const memePct = Number(((memeFills.length / recent.length) * 100).toFixed(1));
+  const winRate = winRateFromFills(memeFills.length >= 5 ? memeFills : fills);
+
+  return { memePct, sampleSize: recent.length, winRate };
 }
 
 function pickWindow(row, window) {
@@ -169,10 +192,63 @@ async function buildActiveTraderList(excludeAddresses, rows) {
   return scored.sort((a, b) => b.trades_per_day - a.trades_per_day).slice(0, MAX_ACTIVE_TRADERS);
 }
 
+// Third, independent pool: traders whose recent activity is concentrated
+// in meme coins specifically, regardless of overall profitability. Draws
+// from the same leaderboard candidate universe, excludes anyone already
+// in the other two pools, and ranks by meme-focus percentage.
+async function buildMemeTraderList(excludeAddresses, rows) {
+  rows = rows || (await fetchLeaderboard());
+  const exclude = new Set(excludeAddresses || []);
+  const candidatePoolSize = MAX_MEME_TRADERS * 5;
+
+  const candidates = rows
+    .map((row) => {
+      const month = pickWindow(row, 'month');
+      const address = row.ethAddress || row.address;
+      return {
+        address,
+        displayName: makeDisplayName(row, address),
+        accountValue: Number(row.accountValue),
+        pnl30d: month ? Number(month.pnl) : null,
+      };
+    })
+    .filter(
+      (c) =>
+        c.address &&
+        !exclude.has(c.address) &&
+        c.accountValue >= MIN_MEME_ACCOUNT_VALUE_USD
+    )
+    .sort((a, b) => b.accountValue - a.accountValue)
+    .slice(0, candidatePoolSize);
+
+  const scored = [];
+  for (const c of candidates) {
+    const { memePct, sampleSize, winRate } = await computeMemeStats(c.address, MEME_LOOKBACK_DAYS);
+    if (sampleSize < MIN_MEME_TRADES) continue;
+    if (memePct < MIN_MEME_TRADE_PCT) continue;
+
+    scored.push({
+      address: c.address,
+      display_name: c.displayName,
+      active: true,
+      pool: 'meme',
+      pnl_30d_usd: c.pnl30d,
+      win_rate_pct: winRate,
+      account_value: c.accountValue,
+      meme_pct: memePct,
+      stats_updated_at: new Date().toISOString(),
+    });
+  }
+
+  return scored.sort((a, b) => b.meme_pct - a.meme_pct).slice(0, MAX_MEME_TRADERS);
+}
+
 module.exports = {
   fetchLeaderboard,
   computeWinRate,
   computeActivityStats,
+  computeMemeStats,
   buildQualifiedTraderList,
   buildActiveTraderList,
+  buildMemeTraderList,
 };
