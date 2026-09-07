@@ -13,8 +13,9 @@ function createBot() {
     reply_markup: {
       keyboard: [
         [{ text: '🏆 Top 10 Traders' }, { text: '⚡ Most Active' }],
-        [{ text: '🔥 Live Signals' }, { text: '📊 Open Positions' }],
-        [{ text: '📋 My Following' }, { text: '📖 How it works' }],
+        [{ text: '🎭 Meme Coins' }, { text: '🔥 Live Signals' }],
+        [{ text: '📊 Open Positions' }, { text: '📋 My Following' }],
+        [{ text: '📖 How it works' }],
       ],
       resize_keyboard: true,
       persistent: true,
@@ -64,6 +65,7 @@ function createBot() {
       { text: '🔄 Refresh', callback_data: 'refresh_traders' },
     ]);
     buttons.push([{ text: '⚡ See Most Active Traders', callback_data: 'show_active' }]);
+    buttons.push([{ text: '🎭 See Meme Coin Specialists', callback_data: 'show_meme' }]);
 
     await bot.sendMessage(chatId, text, {
       parse_mode: 'MarkdownV2',
@@ -118,6 +120,61 @@ function createBot() {
       { text: '🔄 Refresh', callback_data: 'refresh_active' },
     ]);
     buttons.push([{ text: '🏆 See Top 10 Traders', callback_data: 'show_traders' }]);
+    buttons.push([{ text: '🎭 See Meme Coin Specialists', callback_data: 'show_meme' }]);
+
+    await bot.sendMessage(chatId, text, {
+      parse_mode: 'MarkdownV2',
+      reply_markup: { inline_keyboard: buttons },
+    });
+  }
+
+  async function sendMemeTraders(chatId) {
+    const traders = await db.getActiveTradersByPool('meme');
+
+    if (!traders.length) {
+      return bot.sendMessage(
+        chatId,
+        'No meme-coin specialist traders loaded yet. Please wait a minute and try again.',
+        mainMenu
+      );
+    }
+
+    const sorted = traders
+      .sort((a, b) => (b.meme_pct || 0) - (a.meme_pct || 0))
+      .slice(0, 10);
+
+    let text = `🎭 *MEME COIN SPECIALISTS*\n_\\(Ranked by % of trades in meme coins\\)_\n\n`;
+
+    sorted.forEach((t, i) => {
+      const name = escapeMarkdownV2(t.display_name);
+      const pct = escapeMarkdownV2(String(t.meme_pct));
+      const winText =
+        t.win_rate_pct != null ? `${escapeMarkdownV2(String(t.win_rate_pct))}% win rate` : 'win rate n/a';
+      text += `${i + 1}\\. *${name}*\n`;
+      text += `   🎭 ${pct}% meme trades  •  ${winText}\n\n`;
+    });
+
+    const buttons = [];
+    for (let i = 0; i < sorted.length; i += 2) {
+      const row = [];
+      row.push({
+        text: `➕ ${sorted[i].display_name.slice(0, 14)}`,
+        callback_data: `follow_trader:${sorted[i].address}`,
+      });
+      if (sorted[i + 1]) {
+        row.push({
+          text: `➕ ${sorted[i + 1].display_name.slice(0, 14)}`,
+          callback_data: `follow_trader:${sorted[i + 1].address}`,
+        });
+      }
+      buttons.push(row);
+    }
+
+    buttons.push([
+      { text: '➕ Follow All Meme Traders', callback_data: 'follow_all_meme' },
+      { text: '🔄 Refresh', callback_data: 'refresh_meme' },
+    ]);
+    buttons.push([{ text: '🏆 See Top 10 Traders', callback_data: 'show_traders' }]);
 
     await bot.sendMessage(chatId, text, {
       parse_mode: 'MarkdownV2',
@@ -170,11 +227,11 @@ function createBot() {
   async function sendHowItWorks(chatId) {
     const text =
       `📖 *How this bot works*\n\n` +
-      `1️⃣ Every 15 minutes we scan Hyperliquid for two groups: the *Top* traders by profit \\+ win rate, and the *Most Active* traders by trade frequency\\.\n\n` +
+      `1️⃣ Every 15 minutes we scan Hyperliquid for three groups: the *Top* traders by profit \\+ win rate, the *Most Active* by trade frequency, and *Meme Coin Specialists* by how much of their trading is in meme coins\\.\n\n` +
       `2️⃣ We watch all of them *24/7* in real time\\.\n\n` +
       `3️⃣ The second any of them opens or closes a trade → you get an instant notification\\.\n\n` +
-      `4️⃣ You can follow individual traders, whole groups, or specific coins\\.\n\n` +
-      `Follow the *Top* traders for quality, or the *Most Active* traders if you want frequent signals\\.`;
+      `4️⃣ You can follow individual traders, whole groups, or specific coins — including any meme coin listed on Hyperliquid, just \`/follow WIF\` or similar\\.\n\n` +
+      `Follow the *Top* traders for quality, the *Most Active* for frequent signals, or *Meme Coin Specialists* if that's your focus\\. Meme coins are more volatile, so auto\\-copy uses a wider price buffer for them, but fills still aren't guaranteed\\.`;
 
     await bot.sendMessage(chatId, text, {
       parse_mode: 'MarkdownV2',
@@ -182,6 +239,7 @@ function createBot() {
         inline_keyboard: [
           [{ text: '🏆 See Top Traders', callback_data: 'show_traders' }],
           [{ text: '⚡ See Most Active', callback_data: 'show_active' }],
+          [{ text: '🎭 See Meme Specialists', callback_data: 'show_meme' }],
           [{ text: '📋 What am I following?', callback_data: 'my_following' }],
         ],
       },
@@ -338,13 +396,29 @@ function createBot() {
     return /^0x[a-fA-F0-9]{64}$/.test(key);
   }
 
-  async function handleDemo(chatId) {
+  async function handleDemo(chatId, args) {
     const existing = await db.getTradingAccount(chatId);
+    const wantsReset = (args && args[0] || '').toLowerCase() === 'reset';
+
+    if (wantsReset) {
+      if (!existing || !existing.is_demo) {
+        await bot.sendMessage(chatId, 'You don\u2019t have a demo account yet. Use `/demo` to create one.', { parse_mode: 'Markdown' });
+        return;
+      }
+      await db.clearAllDemoPositions(chatId);
+      await db.upsertTradingAccount(chatId, { demo_balance: 100 });
+      await bot.sendMessage(
+        chatId,
+        `🔄 *Demo account reset\\.*\n\nBalance restored to *$100* and any open demo positions were cleared\\.`,
+        { parse_mode: 'MarkdownV2' }
+      );
+      return;
+    }
 
     if (existing && existing.is_demo) {
       await bot.sendMessage(
         chatId,
-        `🧪 You already have a demo account\\.\n\nBalance: *${escapeMarkdownV2(fmtUsdPrecise(existing.demo_balance))}*\n\nFollow a trader and tap 🤖 Auto\\-Copy in *My Following* to practice\\.`,
+        `🧪 You already have a demo account\\.\n\nBalance: *${escapeMarkdownV2(fmtUsdPrecise(existing.demo_balance))}*\n\nFollow a trader and tap 🤖 Auto\\-Copy in *My Following* to practice\\.\n\nUse \`/demo reset\` to start over with $100 again\\.`,
         { parse_mode: 'MarkdownV2' }
       );
       return;
@@ -374,7 +448,7 @@ function createBot() {
         `Max per trade: *$20*\n\n` +
         `Now go to *🏆 Top 10 Traders* or *📋 My Following*, follow a trader, and tap 🤖 Auto\\-Copy\\. ` +
         `You'll get simulated fills and PnL as if you'd copied them for real\\.\n\n` +
-        `Use \`/capital\` and \`/maxpos\` to adjust your demo settings, and \`/mytrades\` to see your history\\.`,
+        `Use \`/capital\` and \`/maxpos\` to adjust your demo settings, \`/mytrades\` to see your history, and \`/demo reset\` to start over\\.`,
       { parse_mode: 'MarkdownV2' }
     );
   }
@@ -649,6 +723,11 @@ function createBot() {
         return;
       }
 
+      if (text === '🎭 Meme Coins' || lower === '/memetraders') {
+        await sendMemeTraders(chatId);
+        return;
+      }
+
       if (text === '📊 Open Positions' || lower === '/positions') {
         await sendOpenPositions(chatId);
         return;
@@ -673,8 +752,9 @@ function createBot() {
         return;
       }
 
-      if (lower === '/demo') {
-        await handleDemo(chatId);
+      if (lower === '/demo' || lower.startsWith('/demo ')) {
+        const args = text.split(/\s+/).slice(1);
+        await handleDemo(chatId, args);
         return;
       }
 
@@ -822,6 +902,12 @@ function createBot() {
         return;
       }
 
+      if (data === 'show_meme' || data === 'refresh_meme') {
+        await bot.answerCallbackQuery(query.id);
+        await sendMemeTraders(chatId);
+        return;
+      }
+
       if (data === 'refresh_positions') {
         await bot.answerCallbackQuery(query.id);
         await sendOpenPositions(chatId);
@@ -869,6 +955,26 @@ function createBot() {
         await bot.sendMessage(
           chatId,
           `✅ You are now following all *${traders.length}* active traders\\.\n\nExpect frequent alerts\\.`,
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+
+      if (data === 'follow_all_meme') {
+        const traders = await db.getActiveTradersByPool('meme');
+        if (!traders.length) {
+          await bot.answerCallbackQuery(query.id, { text: 'No meme traders available' });
+          return;
+        }
+
+        for (const t of traders) {
+          await db.followTrader(chatId, t.address);
+        }
+
+        await bot.answerCallbackQuery(query.id, { text: `Following ${traders.length} meme traders!` });
+        await bot.sendMessage(
+          chatId,
+          `✅ You are now following all *${traders.length}* meme\\-coin specialist traders\\.\n\nHeads up: meme coins are more volatile — auto\\-copy uses a wider slippage buffer for them, but fills still aren't guaranteed\\.`,
           { parse_mode: 'MarkdownV2' }
         );
         return;
