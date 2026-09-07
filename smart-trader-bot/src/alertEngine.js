@@ -3,7 +3,7 @@ const { formatOpenAlert, formatCloseAlert, escapeMarkdownV2, fmtUsd, fmtUsdPreci
 const { fetchLivePositionsByCoin, getAccountValue } = require('./hyperliquid/positions');
 const { placeCopyOrder } = require('./hyperliquid/execution');
 const { decryptSecret } = require('./crypto');
-const { AUTO_TRADE_ENABLED } = require('./config');
+const { AUTO_TRADE_ENABLED, MEME_COINS, MEME_SLIPPAGE_PCT } = require('./config');
 
 function classify(dir) {
   const d = (dir || '').toLowerCase();
@@ -190,8 +190,10 @@ async function executeAutoCopyTrades(bot, coin, side, traderAddress, px) {
         tag: account.agent_key_tag,
       });
 
+      const isMeme = MEME_COINS.includes((coin || '').toUpperCase());
       const { result, size, limitPx } = await placeCopyOrder({
         agentPrivateKey, coin, side, usdSize,
+        slippagePct: isMeme ? MEME_SLIPPAGE_PCT : undefined,
       });
 
       await db.logTradeExecution({
