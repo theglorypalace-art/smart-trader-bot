@@ -149,6 +149,32 @@ async function broadcast(bot, coin, traderAddress, message, trader, signalData =
   );
 }
 
+// Inspect Hyperliquid's order response. The exchange returns errors inside
+// the response body (not as thrown exceptions), and an IOC order can also
+// silently fail to fill — so a "successful" API call proves nothing.
+// Returns { ok, error, fillInfo } where fillInfo is { totalSz, avgPx, ... }
+// when the order filled, or null when it merely rested (IOC: rare).
+function inspectOrderResult(result) {
+  const statuses = (result && result.response && result.response.data && result.response.data.statuses) || [];
+  const errorEntry = statuses.find((s) => s && s.error);
+  const filledEntry = statuses.find((s) => s && s.filled);
+  const restingEntry = statuses.find((s) => s && s.resting);
+
+  if (result && result.status !== 'ok') {
+    return { ok: false, error: `exchange status: ${result.status}`, fillInfo: null };
+  }
+  if (errorEntry) {
+    return { ok: false, error: String(errorEntry.error), fillInfo: null };
+  }
+  if (filledEntry) {
+    return { ok: true, error: null, fillInfo: filledEntry.filled };
+  }
+  if (restingEntry) {
+    return { ok: true, error: null, fillInfo: null }; // accepted but not filled
+  }
+  return { ok: false, error: `empty/unexpected statuses: ${JSON.stringify(result).slice(0, 200)}`, fillInfo: null };
+}
+
 async function executeAutoCopyTrades(bot, coin, side, traderAddress, px) {
   let chatIds;
   try {
@@ -196,6 +222,27 @@ async function executeAutoCopyTrades(bot, coin, side, traderAddress, px) {
         slippagePct: isMeme ? MEME_SLIPPAGE_PCT : undefined,
       });
 
+      // Verify the order actually went through before claiming success.
+      const { ok, error, fillInfo } = inspectOrderResult(result);
+
+      if (!ok) {
+        await db.logTradeExecution({
+          chat_id: chatId, trader_address: traderAddress, coin, side,
+          usd_size: usdSize, order_result: result, status: 'failed',
+          error_message: error,
+        });
+        const coinSafe = escapeMarkdownV2(coin);
+        await bot.sendMessage(
+          chatId,
+          `⚠️ *AUTO-COPY ORDER REJECTED*\n\n` +
+            `${side === 'long' ? 'LONG' : 'SHORT'} ${coinSafe} — ${escapeMarkdownV2(fmtUsd(usdSize))}\n` +
+            `Hyperliquid says: _${escapeMarkdownV2(String(error).slice(0, 150))}_\n\n` +
+            `_Common causes: agent key not approved on your account, perp trading not enabled, or insufficient margin._`,
+          { parse_mode: 'MarkdownV2' }
+        ).catch(() => {});
+        continue;
+      }
+
       await db.logTradeExecution({
         chat_id: chatId, trader_address: traderAddress, coin, side,
         usd_size: usdSize, order_result: result, status: 'submitted',
@@ -203,13 +250,16 @@ async function executeAutoCopyTrades(bot, coin, side, traderAddress, px) {
 
       const coinSafe = escapeMarkdownV2(coin);
       const sideText = side === 'long' ? 'LONG' : 'SHORT';
+      const fillText = fillInfo && fillInfo.avgPx != null
+        ? `Filled: ${escapeMarkdownV2(String(fillInfo.avgPx))} x ${escapeMarkdownV2(String(fillInfo.totalSz))} ${coinSafe}`
+        : `Accepted at limit ${escapeMarkdownV2(String(limitPx))} \\(not yet filled\\)`;
       await bot.sendMessage(
         chatId,
-        `🤖 *AUTO\\-COPY EXECUTED*\n\n` +
+        `🤖 *AUTO-COPY EXECUTED*\n\n` +
           `${sideText} ${coinSafe} — size ~${escapeMarkdownV2(fmtUsd(usdSize))} \\(${escapeMarkdownV2(String(size))} ${coinSafe}\\)\n` +
-          `Order price: ${escapeMarkdownV2(String(limitPx))}\n\n` +
-          `_Check Hyperliquid directly to confirm the fill\\._`,
-        { parse_mode: 'MarkdownV2' }
+          fillText + `\n\n` +
+          `_Verify on Hyperliquid: https://app.hyperliquid.xyz/portfolio_`,
+        { parse_mode: 'MarkdownV2', disable_web_page_preview: true }
       ).catch(() => {});
     } catch (err) {
       console.error(`[auto-copy] failed for chat ${chatId}:`, err.message);
